@@ -1,0 +1,160 @@
+# Mini Agent 操作文档
+
+## 启动
+
+### 1. 后端（FastAPI）
+
+```powershell
+cd F:\mini-agent
+.\venv\Scripts\Activate.ps1
+uvicorn app.server:app --reload --port 8000
+```
+
+### 2. 前端（Vue + Vite）
+
+```powershell
+cd F:\mini-agent\frontend
+npm run dev
+```
+
+浏览器打开：**http://localhost:5173**
+
+---
+
+## 常用接口
+
+| 接口 | 说明 |
+|------|------|
+| `GET /health` | 检查 API 连接状态 |
+| `GET /models` | 获取可用模型列表 |
+| `GET /modes` | 兼容旧接口 |
+| `GET /thinking` | 原生思考能力与模型支持列表 |
+| `PUT /sessions/{id}/model` | 切换会话模型 |
+| `GET /sessions` | 获取会话列表 |
+| `GET /sessions/{id}` | 获取会话历史 |
+| `POST /sessions` | 创建会话 |
+| `DELETE /sessions/{id}` | 删除会话 |
+| `POST /chat/stream` | SSE 流式对话（主接口） |
+| `POST /chat` | 非流式对话（兼容） |
+| `GET /files` | 列出 workspace 文件 |
+| `GET /tools` | 列出 Agent 工具 |
+| `GET /rag/status` | RAG 知识库状态 |
+| `GET /rag/search?q=` | RAG 检索（调试） |
+| `POST /rag/index` | 索引 workspace 文件到知识库 |
+| `GET /mcp/status` | MCP 连接状态 |
+| `POST /mcp/reload` | 重新加载 MCP 工具 |
+
+---
+
+## 配置
+
+编辑项目根目录 **`.env`**（与 `app/` 同级，路径：`F:\mini-agent\.env`）：
+
+```env
+MODEL=deepseek-v4-flash          # 默认模型
+
+# 每个厂商独立 KEY（不能共用 API_KEY）
+DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+
+QWEN_API_KEY=...
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen-plus
+
+KIMI_API_KEY=...
+KIMI_BASE_URL=https://api.moonshot.cn/v1
+KIMI_MODEL=moonshot-v1-32k
+
+GLM_API_KEY=...
+GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+GLM_MODEL=glm-4-flash
+
+# RAG 知识库（可选）
+RAG_EMBEDDING_MODE=tfidf
+```
+
+> 格式要求：每行 `KEY=value`，不要加引号，等号两边不要空格。  
+> 修改后需 **重启后端**。可从任意目录启动，系统会自动读取项目根目录的 `.env`。  
+> Qwen 请用 `dashscope.aliyuncs.com/compatible-mode/v1`，不要用 `api.qwen.ai`（会 404）。
+
+---
+
+## 切换模型
+
+1. 前端顶栏下拉框按厂商分组：**DeepSeek / Qwen / Kimi / GLM**
+2. 只有 `.env` 里配置了对应 `*_API_KEY` 的模型才可选（未配置显示「未配置」）
+3. 切换后会话级生效，发送消息时会带上当前选中的 `model`
+4. 左下角状态栏会显示当前模型名称
+
+---
+
+## 思考模式（原生）
+
+顶栏 **🧠 深度思考** 开关控制，对应 API 参数 `thinking=true/false`：
+
+| 开关 | 参数 | 说明 |
+|------|------|------|
+| 关 | `thinking=false` | 普通回答 |
+| 开 | `thinking=true` | 模型原生思考链（`reasoning_content`） |
+
+**支持原生思考的模型**（API 级，非 prompt 模拟）：
+- DeepSeek：`thinking.type=enabled`
+- Qwen：`enable_thinking=true`
+- Kimi K2：`enable_thinking=true`
+- GLM：`enable_thinking=true`
+
+不支持原生思考的模型，开启开关时会提示并回退普通模式。
+
+查看各模型是否支持：`GET /thinking`
+
+```powershell
+# API 调用示例
+curl -X POST http://127.0.0.1:8000/chat/stream \
+  -F "message=1+1等于几" \
+  -F "session_id=test" \
+  -F "model=deepseek-v4-flash" \
+  -F "thinking=true"
+```
+
+---
+
+## MCP 集成
+
+### 方式一：Cursor 调用 Mini Agent 工具
+
+项目已包含 `.cursor/mcp.json`，重启 Cursor 后可用 `calculator`、`read_file`、`rag_search` 等工具。
+
+手动测试 MCP Server：
+
+```powershell
+cd F:\mini-agent
+.\venv\Scripts\python.exe -m app.mcp.server
+```
+
+### 方式二：Mini Agent 接入外部 MCP 工具
+
+1. `copy mcp_servers.json.example mcp_servers.json` 并编辑
+2. `.env` 设置 `MCP_ENABLED=true`
+3. 重启后端，访问 `GET /mcp/status` 查看已加载工具
+
+详见 **开发文档.md → MCP 集成**。
+
+---
+
+## 注意事项
+
+- ❌ 不要用 `python app/main.py`（旧 mock，无真实 AI）
+- ✅ 使用 `uvicorn app.server:app --reload --port 8000`（可在任意目录运行，需能 import app）
+- 若左下角显示「API Key 未配置」，检查 `.env` 是否在项目根目录，访问 `GET /health` 看 `env_exists` 和 `api_configured`
+- 会话数据保存在 `data/mini_agent.db`（SQLite）
+- 旧 JSON 数据会自动迁移，备份为 `data/sessions.json.bak`
+- 上传文件会自动索引到 RAG 知识库（`data/rag/`）
+
+---
+
+## 项目说明
+
+| 文档 | 说明 |
+|------|------|
+| **开发文档.md** | 架构、模块、API、扩展指南（开发者） |
+| **AGENTS.md** | Cursor Agent 路线图与历史问题 |

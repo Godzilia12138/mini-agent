@@ -1,0 +1,43 @@
+# ── 环境 ──
+.env
+.env.local
+.env.*.local
+
+# ── Python ──
+venv/
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# ── Node ──
+frontend/node_modules/
+frontend/dist/
+
+# ── 运行时数据 ──
+data/
+workspace/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── 系统 ──
+.DS_Store
+Thumbs.db
+*.lnk
+
+# ── 日志 ──
+*.log
+
+# ── 大文件（不跟踪） ──
+*.pkl
+*.joblib
+*.faiss
+*.db
+*.bak
