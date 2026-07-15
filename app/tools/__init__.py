@@ -1,4 +1,5 @@
 """Tool System — 统一注册与执行。"""
+from app.logger import get_logger
 from app.tools.registry import ToolRegistry
 from app.tools.workspace import WORKSPACE, list_workspace_files
 from app.tools.file_tools import (
@@ -10,6 +11,8 @@ from app.tools.file_tools import (
 from app.tools.calculator import CalculatorTool
 from app.tools.extended_tools import DbQueryTool, WebSearchTool
 from app.tools.rag_tools import RagSearchTool, RagIndexTool, RagStatusTool
+
+log = get_logger(__name__)
 
 
 def _build_registry() -> ToolRegistry:
@@ -29,7 +32,7 @@ def _build_registry() -> ToolRegistry:
         from app.mcp.tool_adapter import register_mcp_tools
         register_mcp_tools(reg)
     except Exception as exc:
-        print(f"[MCP] 工具加载跳过: {exc}")
+        log.warning("MCP 工具加载跳过: %s", exc)
     return reg
 
 

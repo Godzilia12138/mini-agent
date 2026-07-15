@@ -1,16 +1,20 @@
 import io
 import json
 import os
+import time
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from docx import Document
 
+from app.logger import get_logger, _sanitize
 from app.session import SessionManager
 from app.tools import WORKSPACE
 from app.router import model_router
 from app.thinking import parse_thinking, supports_native_thinking
+
+log = get_logger(__name__)
 
 app = FastAPI(title="Mini AI Agent")
 
@@ -250,8 +254,18 @@ async def chat_stream_endpoint(
     thinking: str = Form("false"),
     mode: str = Form(None),
 ):
+    req_time = time.time()
     agent = sessions.get_agent(session_id)
     thinking_enabled = parse_thinking(thinking if mode is None else mode)
+
+    log.info(
+        "请求 | session=%s | model=%s | thinking=%s | upload=%s | msg=%s",
+        session_id[:8] if session_id else "default",
+        model or agent.model,
+        thinking_enabled,
+        file.filename if file else "无",
+        _sanitize(message, 80),
+    )
 
     if model:
         try:
@@ -281,11 +295,24 @@ async def chat_stream_endpoint(
                 if event["type"] == "done":
                     sessions.save(session_id)
         except ValueError as e:
+            log.error("请求配置错误 | session=%s | err=%s", session_id[:8], e)
             yield _sse_event({"type": "error", "content": f"⚠️ 配置错误：{e}"})
         except RuntimeError as e:
+            log.error("请求 API 失败 | session=%s | err=%s", session_id[:8], e)
             yield _sse_event({"type": "error", "content": f"⚠️ API 调用失败：{e}"})
         except Exception as e:
+            log.error("请求异常 | session=%s | err=%s", session_id[:8], e, exc_info=True)
             yield _sse_event({"type": "error", "content": f"⚠️ 发生错误：{e}"})
+        else:
+            total = time.time() - req_time
+            log.info("请求完成 | session=%s | 总耗时=%.2fs", session_id[:8], total)
+        finally:
+            agent_model = getattr(agent, "model", "?")
+            total = time.time() - req_time
+            log.info(
+                "请求结束 | session=%s | model=%s | 总耗时=%.2fs",
+                session_id[:8], agent_model, total,
+            )
 
     return StreamingResponse(
         generate(),

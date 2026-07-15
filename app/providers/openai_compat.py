@@ -4,8 +4,11 @@ import time
 import requests
 
 from app.config import provider_credentials
+from app.logger import get_logger, _sanitize
 from app.providers.base import BaseModelProvider
 from app.thinking import apply_thinking_payload, supports_native_thinking
+
+log = get_logger(__name__)
 
 _RETRYABLE_STATUS = {429, 502, 503, 504}
 _MAX_RETRIES = 3
@@ -100,7 +103,9 @@ class OpenAICompatibleProvider(BaseModelProvider):
 
     def _post_with_retry(self, url: str, *, payload: dict, stream: bool = False):
         last_res = None
+        model_name = payload.get("model", "?")
         for attempt in range(_MAX_RETRIES + 1):
+            t0 = time.time()
             res = requests.post(
                 url,
                 json=payload,
@@ -108,11 +113,25 @@ class OpenAICompatibleProvider(BaseModelProvider):
                 stream=stream,
                 timeout=120,
             )
-            if res.ok or res.status_code not in _RETRYABLE_STATUS:
+            elapsed = time.time() - t0
+            if res.ok:
+                if attempt > 0:
+                    log.info("API 重试成功 | model=%s | attempt=%d | 耗时=%.2fs",
+                             model_name, attempt + 1, elapsed)
                 return res
-            last_res = res
+
+            if res.status_code not in _RETRYABLE_STATUS:
+                log.error("API 不可重试错误 | model=%s | status=%d | body=%s",
+                          model_name, res.status_code, _sanitize(res.text, 200))
+                return res
+
+            # 可重试
+            delay = self._retry_delay(res, attempt)
+            log.warning("API 重试 %d/%d | model=%s | status=%d | 耗时=%.2fs | 等待=%.1fs",
+                        attempt + 1, _MAX_RETRIES, model_name, res.status_code, elapsed, delay)
             if attempt < _MAX_RETRIES:
-                time.sleep(self._retry_delay(res, attempt))
+                time.sleep(delay)
+            last_res = res
         return last_res
 
     def _build_payload(self, messages, tools, temperature, thinking: bool):
@@ -160,17 +179,22 @@ class OpenAICompatibleProvider(BaseModelProvider):
         payload = self._build_payload(messages, tools, temperature, thinking)
         payload["stream"] = True
 
+        t0 = time.time()
         res = self._post_with_retry(
             f"{self.base_url}/chat/completions",
             payload=payload,
             stream=True,
         )
         if not res.ok:
+            elapsed = time.time() - t0
+            log.error("API 流式请求失败 | model=%s | status=%d | 耗时=%.2fs",
+                      self.model_name, res.status_code, elapsed)
             raise RuntimeError(self._format_api_error(res))
 
         content = ""
         reasoning = ""
         tool_calls: dict[int, dict] = {}
+        input_tokens = output_tokens = 0
 
         for line in _iter_sse_lines(res):
             if not line.startswith("data: "):
@@ -186,6 +210,12 @@ class OpenAICompatibleProvider(BaseModelProvider):
                 continue
 
             delta = obj.get("choices", [{}])[0].get("delta", {})
+
+            # 统计 token 用量
+            usage = obj.get("usage")
+            if usage:
+                input_tokens = usage.get("prompt_tokens", 0) or input_tokens
+                output_tokens = usage.get("completion_tokens", 0) or output_tokens
 
             for ev in self._parse_stream_delta(delta, thinking):
                 if ev["type"] == "thinking":
@@ -208,7 +238,11 @@ class OpenAICompatibleProvider(BaseModelProvider):
                 if fn.get("arguments"):
                     tool_calls[idx]["function"]["arguments"] += fn["arguments"]
 
+        elapsed = time.time() - t0
         if tool_calls:
+            tools_name = [tc["function"]["name"] for _, tc in sorted(tool_calls.items())]
+            log.info("API 返回工具调用 | model=%s | tools=%s | 耗时=%.2fs | tokens=%d+%d",
+                     self.model_name, tools_name, elapsed, input_tokens, output_tokens)
             yield {
                 "type": "tool_calls",
                 "tool_calls": [tool_calls[i] for i in sorted(tool_calls)],
@@ -216,6 +250,8 @@ class OpenAICompatibleProvider(BaseModelProvider):
                 "reasoning_content": reasoning,
             }
         else:
+            log.info("API 返回文本 | model=%s | 耗时=%.2fs | tokens=%d+%d | 长度=%d",
+                     self.model_name, elapsed, input_tokens, output_tokens, len(content))
             yield {"type": "finish", "content": content, "reasoning_content": reasoning}
 
     def to_dict(self) -> dict:

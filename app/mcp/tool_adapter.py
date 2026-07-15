@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from app.tools.base import Tool
 from app.tools.registry import ToolRegistry
+from app.logger import get_logger
+
+log = get_logger(__name__)
 
 
 class MCPTool(Tool):
@@ -40,7 +43,7 @@ def register_mcp_tools(registry: ToolRegistry) -> int:
     if not bridge.tools:
         ok = bridge.start(servers)
         if not ok and bridge.error:
-            print(f"[MCP] 连接失败: {bridge.error}")
+            log.warning("MCP 连接失败: %s", bridge.error)
 
     count = 0
     for tool_name, meta in bridge.tools.items():

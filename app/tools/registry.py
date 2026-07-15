@@ -1,4 +1,8 @@
 from app.tools.base import Tool
+from app.logger import get_logger, _sanitize
+import time
+
+log = get_logger(__name__)
 
 
 class ToolRegistry:
@@ -11,6 +15,7 @@ class ToolRegistry:
         if tool.name in self._tools:
             raise ValueError(f"工具已注册: {tool.name}")
         self._tools[tool.name] = tool
+        log.info("工具注册: %s — %s", tool.name, tool.description)
         return self
 
     def get(self, name: str) -> Tool | None:
@@ -25,10 +30,18 @@ class ToolRegistry:
     def execute(self, name: str, args: dict) -> str:
         tool = self._tools.get(name)
         if not tool:
+            log.warning("未知工具调用: %s", name)
             return f"未知工具: {name}"
         try:
-            return str(tool.execute(args))
+            t0 = time.time()
+            result = str(tool.execute(args))
+            elapsed = time.time() - t0
+            log.info("工具执行: %s | 耗时=%.2fs | 结果长度=%d",
+                     name, elapsed, len(result))
+            return result
         except Exception as e:
+            elapsed = time.time() - t0
+            log.error("工具执行异常: %s | 耗时=%.2fs | err=%s", name, elapsed, e, exc_info=True)
             return f"工具执行失败: {e}"
 
     def tool_names(self) -> list[str]:

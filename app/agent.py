@@ -1,10 +1,14 @@
 import json
 import re
+import time
 
+from app.logger import get_logger, _sanitize
 from app.router import model_router
 from app.memory import Memory
 from app.tools import tool_registry
 from app.thinking import build_system_prompt, parse_thinking, supports_native_thinking
+
+log = get_logger(__name__)
 
 # ── 上下文窗口管理 ──
 MAX_CONTEXT_CHARS = 12000      # 超过此字符数触发滑动窗口
@@ -119,9 +123,19 @@ class Agent:
             self.title = task.strip()[:24] + ("..." if len(task.strip()) > 24 else "")
 
     def run_stream(self, task: str, thinking: bool = False):
+        start_time = time.time()
         thinking = parse_thinking(thinking)
         provider = self._get_provider()
         native = thinking and getattr(provider, "supports_thinking", lambda: False)()
+
+        log.info(
+            "[session=%s] 请求 | model=%s | thinking=%s | msg=%s",
+            self.session_id[:8] if self.session_id else "new",
+            self.model,
+            native,
+            _sanitize(task, 120),
+        )
+        step_count = 0
 
         if thinking and not native:
             yield {
@@ -137,10 +151,15 @@ class Agent:
         tools = tool_registry.get_definitions()
         max_steps = 8 if native else 6
 
-        for _ in range(max_steps):
+        for step in range(max_steps):
+            step_count += 1
             tool_calls = None
             content = ""
             reasoning = ""
+
+            log.debug("[session=%s] step=%d/%d | messages=%d | tools=%d",
+                       self.session_id[:8] if self.session_id else "new",
+                       step + 1, max_steps, len(messages), len(tools))
 
             for event in provider.chat_stream(messages, tools=tools, thinking=native):
                 if event["type"] == "thinking":
@@ -174,8 +193,19 @@ class Agent:
 
                 for call in tool_calls:
                     name = call["function"]["name"]
+                    args_raw = call["function"].get("arguments", "{}")
                     yield {"type": "status", "content": f"🔧 正在调用 {name}..."}
-                    result = self._execute_tool(name, call["function"].get("arguments", "{}"))
+                    t0 = time.time()
+                    result = self._execute_tool(name, args_raw)
+                    elapsed = time.time() - t0
+                    log.info(
+                        "[session=%s] 工具调用 | name=%s | args=%s |耗时=%.2fs | ok=%s",
+                        self.session_id[:8] if self.session_id else "new",
+                        name,
+                        _sanitize(args_raw, 80),
+                        elapsed,
+                        not result.startswith("未知工具") and "失败" not in result[:6],
+                    )
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
@@ -183,7 +213,15 @@ class Agent:
                     })
                 continue
 
-            answer = content or "抱歉，我暂时无法回答这个问题。"
+            elapsed = time.time() - start_time
+            log.info(
+                "[session=%s] 完成 | model=%s | steps=%d | 耗时=%.2fs | 回答长度=%d",
+                self.session_id[:8] if self.session_id else "new",
+                self.model,
+                step_count,
+                elapsed,
+                len(answer),
+            )
             self.memory.add_chat("assistant", answer)
             yield {
                 "type": "done",
@@ -195,6 +233,14 @@ class Agent:
             }
             return
 
+        elapsed = time.time() - start_time
+        log.warning(
+            "[session=%s] 步骤超限 | model=%s | steps=%d | 耗时=%.2fs",
+            self.session_id[:8] if self.session_id else "new",
+            self.model,
+            step_count,
+            elapsed,
+        )
         answer = "分析步骤过多，请尝试更具体的问题。"
         self.memory.add_chat("assistant", answer)
         yield {
